@@ -234,16 +234,16 @@ export async function createBaseClient(): Promise<BaseClient> {
       async saveConfig(config: TimelineConfig) {
         try {
           const existingConfig = await bitable.dashboard?.getConfig?.().catch(() => null);
-          const dataConditions: unknown[] = existingConfig?.dataConditions?.length
-            ? existingConfig.dataConditions
-            : [
-                {
-                  tableId: config.tableId,
-                  dataRange: { type: sdk.SourceType.ALL },
-                  groups: [],
-                  series: 'COUNTA'
-                }
-              ];
+          const primaryCondition = existingConfig?.dataConditions?.[0];
+          const dataConditions = [
+            {
+              ...primaryCondition,
+              tableId: config.tableId,
+              dataRange: primaryCondition?.dataRange ?? { type: sdk.SourceType.ALL },
+              groups: primaryCondition?.groups ?? [],
+              series: primaryCondition?.series ?? 'COUNTA'
+            }
+          ];
 
           if (!bitable.dashboard?.saveConfig) {
             return true;
