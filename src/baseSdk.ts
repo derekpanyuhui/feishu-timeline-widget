@@ -121,7 +121,7 @@ function deriveConfigFromDashboardCondition(
   const primary = config?.dataConditions?.[0];
   const groupIds = primary?.groups?.map((group) => group.fieldId).filter(Boolean) ?? [];
 
-  if (!primary?.tableId || groupIds.length < 3) {
+  if (!primary?.tableId) {
     return null;
   }
 
@@ -171,6 +171,25 @@ function getDashboardModeFromLocation(): DashboardMode {
   if (flag('isConfig')) return 'config';
   if (flag('isFullScreen')) return 'fullscreen';
   return 'view';
+}
+
+function normalizeDashboardMode(value: unknown): DashboardMode {
+  if (typeof value !== 'string') {
+    return getDashboardModeFromLocation();
+  }
+
+  switch (value.toLowerCase()) {
+    case 'create':
+      return 'create';
+    case 'config':
+      return 'config';
+    case 'fullscreen':
+      return 'fullscreen';
+    case 'view':
+      return 'view';
+    default:
+      return getDashboardModeFromLocation();
+  }
 }
 
 function isLikelyFeishuHost() {
@@ -234,19 +253,15 @@ export async function createBaseClient(): Promise<BaseClient> {
     const buildDataCondition = (
       config: TimelineConfig,
       existingCondition?: {
+        baseToken?: string;
         dataRange?: unknown;
-        groups?: unknown[];
-        series?: unknown;
       }
     ) => ({
       tableId: config.tableId,
+      ...(existingCondition?.baseToken ? { baseToken: existingCondition.baseToken } : {}),
       dataRange: existingCondition?.dataRange ?? { type: sdk.SourceType.ALL },
-      groups: [
-        { fieldId: config.nameFieldId },
-        { fieldId: config.startDateFieldId },
-        { fieldId: config.endDateFieldId }
-      ],
-      series: existingCondition?.series ?? 'COUNTA'
+      groups: [],
+      series: 'COUNTA'
     });
 
     if (!bitable?.base) {
@@ -257,7 +272,7 @@ export async function createBaseClient(): Promise<BaseClient> {
       isConnected: true,
       isDashboard: Boolean(bitable.dashboard),
       getDashboardMode() {
-        return bitable.dashboard ? getDashboardModeFromLocation() : 'standard';
+        return bitable.dashboard ? normalizeDashboardMode(bitable.dashboard.state) : 'standard';
       },
       async getTables() {
         if (typeof bitable.base.getTableMetaList === 'function') {
@@ -302,31 +317,6 @@ export async function createBaseClient(): Promise<BaseClient> {
         }));
       },
       async getTimelineItems(config: TimelineConfig) {
-        if (bitable.dashboard && isConfigComplete(config)) {
-          const mode = getDashboardModeFromLocation();
-          const existingConfig = await bitable.dashboard.getConfig?.().catch(() => null);
-          const primaryCondition = existingConfig?.dataConditions?.[0];
-          const dataCondition = buildDataCondition(config, primaryCondition);
-
-          try {
-            if (mode === 'create' || mode === 'config') {
-              const previewRows = await bitable.dashboard.getPreviewData(dataCondition as never);
-              return parseDashboardRows(
-                previewRows as Array<Array<{ text?: string | null; value?: string | number | null }>>,
-                config
-              );
-            }
-
-            const viewRows = await bitable.dashboard.getData();
-            return parseDashboardRows(
-              viewRows as Array<Array<{ text?: string | null; value?: string | number | null }>>,
-              config
-            );
-          } catch {
-            // fall back to direct base reading if dashboard data APIs reject the custom condition
-          }
-        }
-
         const table = await bitable.base.getTableById(config.tableId);
         const allRecords: Array<{ recordId?: string; id?: string; fields: Record<string, unknown> }> = [];
         let pageToken: number | undefined;
@@ -371,7 +361,8 @@ export async function createBaseClient(): Promise<BaseClient> {
             return saved;
           }
 
-          return deriveConfigFromDashboardCondition(dashboardConfig);
+          const fallback = deriveConfigFromDashboardCondition(dashboardConfig);
+          return fallback && fallback.tableId ? fallback : null;
         } catch {
           return null;
         }
