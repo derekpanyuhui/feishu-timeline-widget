@@ -3,7 +3,7 @@ export type TableMeta = {
   name: string;
 };
 
-export type FieldKind = 'name' | 'status' | 'date' | 'other';
+export type FieldKind = 'name' | 'date' | 'other';
 
 export type FieldMeta = {
   id: string;
@@ -16,8 +16,8 @@ export type FieldMeta = {
 export type TimelineConfig = {
   tableId: string;
   nameFieldId: string;
-  statusFieldId: string;
-  dateFieldId: string;
+  startDateFieldId: string;
+  endDateFieldId: string;
 };
 
 export type TimelineItem = {
@@ -27,6 +27,7 @@ export type TimelineItem = {
   dateText: string;
   dateValue: number;
   completed: boolean;
+  state: 'done' | 'active' | 'pending';
 };
 
 export type BaseClient = {

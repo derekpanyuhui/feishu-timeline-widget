@@ -4,7 +4,6 @@ import type { BaseClient, FieldKind, FieldMeta, TableMeta, TimelineConfig, Timel
 
 const labels: Record<FieldKind, string> = {
   name: '名称字段',
-  status: '状态字段',
   date: '日期字段',
   other: '其他字段'
 };
@@ -48,9 +47,9 @@ function FieldSelect({
 function Timeline({ items }: { items: TimelineItem[] }) {
   if (!items.length) {
     return (
-      <div className="empty">
+        <div className="empty">
         <div className="empty-title">还没有可展示的里程碑</div>
-        <div className="empty-copy">请选择数据源、里程碑名称、完成状态和日期字段。</div>
+        <div className="empty-copy">请选择数据源、里程碑名称、开始日期和结束日期字段。</div>
       </div>
     );
   }
@@ -60,7 +59,7 @@ function Timeline({ items }: { items: TimelineItem[] }) {
       <div className="timeline" style={{ ['--item-count' as string]: items.length }}>
         <div className="timeline-line" />
         {items.map((item) => (
-          <article className={`milestone ${item.completed ? 'is-done' : 'is-open'}`} key={item.id}>
+          <article className={`milestone is-${item.state}`} key={item.id}>
             <div className="milestone-name" title={item.name}>
               {item.name}
             </div>
@@ -79,12 +78,14 @@ export default function App() {
   const [tables, setTables] = useState<TableMeta[]>([]);
   const [fields, setFields] = useState<FieldMeta[]>([]);
   const [items, setItems] = useState<TimelineItem[]>([]);
-  const [config, setConfig] = useState<TimelineConfig>({
+  const emptyConfig: TimelineConfig = {
     tableId: '',
     nameFieldId: '',
-    statusFieldId: '',
-    dateFieldId: ''
-  });
+    startDateFieldId: '',
+    endDateFieldId: ''
+  };
+  const [draftConfig, setDraftConfig] = useState<TimelineConfig>(emptyConfig);
+  const [appliedConfig, setAppliedConfig] = useState<TimelineConfig>(emptyConfig);
   const [isLoading, setIsLoading] = useState(true);
   const [message, setMessage] = useState('正在连接多维表格...');
 
@@ -102,7 +103,7 @@ export default function App() {
       setMessage(nextClient.isConnected ? '已连接当前多维表格' : '本地预览模式：使用示例数据');
 
       if (nextTables[0]) {
-        setConfig((current) => ({ ...current, tableId: nextTables[0].id }));
+        setDraftConfig((current) => ({ ...current, tableId: nextTables[0].id }));
       }
 
       setIsLoading(false);
@@ -116,11 +117,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!client || !config.tableId) return;
+    if (!client || !draftConfig.tableId) return;
 
     let alive = true;
     const activeClient = client;
-    const activeTableId = config.tableId;
+    const activeTableId = draftConfig.tableId;
 
     async function loadFields() {
       setIsLoading(true);
@@ -129,7 +130,9 @@ export default function App() {
       if (!alive) return;
 
       setFields(nextFields);
-      setConfig(pickInitialConfig(activeTableId, nextFields));
+      const nextConfig = pickInitialConfig(activeTableId, nextFields);
+      setDraftConfig(nextConfig);
+      setAppliedConfig((current) => (current.tableId ? current : nextConfig));
       setIsLoading(false);
     }
 
@@ -138,14 +141,22 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [client, config.tableId]);
+  }, [client, draftConfig.tableId]);
 
   useEffect(() => {
-    if (!client || !config.tableId || !config.nameFieldId || !config.statusFieldId || !config.dateFieldId) return;
+    if (
+      !client ||
+      !appliedConfig.tableId ||
+      !appliedConfig.nameFieldId ||
+      !appliedConfig.startDateFieldId ||
+      !appliedConfig.endDateFieldId
+    ) {
+      return;
+    }
 
     let alive = true;
     const activeClient = client;
-    const activeConfig = config;
+    const activeConfig = appliedConfig;
 
     async function loadItems() {
       setIsLoading(true);
@@ -162,9 +173,19 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [client, config]);
+  }, [client, appliedConfig]);
 
   const completedCount = items.filter((item) => item.completed).length;
+  const canApply =
+    Boolean(draftConfig.tableId) &&
+    Boolean(draftConfig.nameFieldId) &&
+    Boolean(draftConfig.startDateFieldId) &&
+    Boolean(draftConfig.endDateFieldId);
+
+  async function applyDraftConfig() {
+    if (!client || !canApply) return;
+    setAppliedConfig(draftConfig);
+  }
 
   return (
     <main className="app-shell">
@@ -198,10 +219,11 @@ export default function App() {
           <button
             type="button"
             onClick={async () => {
-              if (!client) return;
+              if (!client || !canApply) return;
               setIsLoading(true);
-              const nextItems = await client.getTimelineItems(config);
+              const nextItems = await client.getTimelineItems(draftConfig);
               setItems(nextItems);
+              setAppliedConfig(draftConfig);
               setIsLoading(false);
             }}
           >
@@ -211,7 +233,10 @@ export default function App() {
 
         <label className="control">
           <span>数据表</span>
-          <select value={config.tableId} onChange={(event) => setConfig((current) => ({ ...current, tableId: event.target.value }))}>
+          <select
+            value={draftConfig.tableId}
+            onChange={(event) => setDraftConfig((current) => ({ ...current, tableId: event.target.value }))}
+          >
             {tables.map((table) => (
               <option key={table.id} value={table.id}>
                 {table.name}
@@ -222,29 +247,29 @@ export default function App() {
 
         <FieldSelect
           label="里程碑名称"
-          value={config.nameFieldId}
+          value={draftConfig.nameFieldId}
           fields={fields}
           preferredKinds={['name']}
-          onChange={(value) => setConfig((current) => ({ ...current, nameFieldId: value }))}
+          onChange={(value) => setDraftConfig((current) => ({ ...current, nameFieldId: value }))}
         />
 
         <FieldSelect
-          label="完成状态"
-          value={config.statusFieldId}
-          fields={fields}
-          preferredKinds={['status', 'name']}
-          onChange={(value) => setConfig((current) => ({ ...current, statusFieldId: value }))}
-        />
-
-        <FieldSelect
-          label="完成时间"
-          value={config.dateFieldId}
+          label="开始日期"
+          value={draftConfig.startDateFieldId}
           fields={fields}
           preferredKinds={['date']}
-          onChange={(value) => setConfig((current) => ({ ...current, dateFieldId: value }))}
+          onChange={(value) => setDraftConfig((current) => ({ ...current, startDateFieldId: value }))}
         />
 
-        <button className="primary" type="button">
+        <FieldSelect
+          label="结束日期"
+          value={draftConfig.endDateFieldId}
+          fields={fields}
+          preferredKinds={['date']}
+          onChange={(value) => setDraftConfig((current) => ({ ...current, endDateFieldId: value }))}
+        />
+
+        <button className="primary" type="button" disabled={!canApply || isLoading} onClick={applyDraftConfig}>
           确定
         </button>
       </aside>

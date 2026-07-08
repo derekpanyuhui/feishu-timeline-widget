@@ -202,8 +202,12 @@ select {
   color: #18a871;
 }
 
-.milestone.is-open {
-  color: #b7a04b;
+.milestone.is-active {
+  color: #2f6fe4;
+}
+
+.milestone.is-pending {
+  color: #98a3b3;
 }
 
 .settings {
@@ -277,6 +281,11 @@ select {
   cursor: pointer;
   font-size: 15px;
   font-weight: 700;
+}
+
+.primary:disabled {
+  background: #aeb8c6;
+  cursor: not-allowed;
 }
 
 .loading,

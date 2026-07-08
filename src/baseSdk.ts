@@ -3,24 +3,12 @@ import { sampleFields, sampleTables, sampleTimelineItems } from './sampleData';
 
 const FIELD_TYPES = {
   text: 1,
-  number: 2,
-  singleSelect: 3,
-  multiSelect: 4,
   dateTime: 5,
-  checkbox: 7,
-  progress: 21,
   createdTime: 1001,
   modifiedTime: 1002
 };
 
 const dateTypes = new Set<unknown>([FIELD_TYPES.dateTime, FIELD_TYPES.createdTime, FIELD_TYPES.modifiedTime]);
-const statusTypes = new Set<unknown>([
-  FIELD_TYPES.text,
-  FIELD_TYPES.singleSelect,
-  FIELD_TYPES.multiSelect,
-  FIELD_TYPES.checkbox,
-  FIELD_TYPES.progress
-]);
 
 function classifyField(field: { name?: string; type?: unknown; isPrimary?: boolean }): FieldKind {
   const name = field.name ?? '';
@@ -29,12 +17,8 @@ function classifyField(field: { name?: string; type?: unknown; isPrimary?: boole
     return 'name';
   }
 
-  if (dateTypes.has(field.type) || /日期|时间|完成日|计划/.test(name)) {
+  if (dateTypes.has(field.type) || /日期|时间|开始|结束|完成日|计划/.test(name)) {
     return 'date';
-  }
-
-  if (statusTypes.has(field.type) || /状态|完成|进度/.test(name)) {
-    return 'status';
   }
 
   return 'other';
@@ -83,8 +67,29 @@ function normalizeDate(value: unknown): { text: string; timestamp: number } {
   };
 }
 
-function isCompletedStatus(status: string): boolean {
-  return /已完成|完成|done|closed|通过|结束/i.test(status);
+function startOfToday() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+function deriveStatus(startTimestamp: number, endTimestamp: number) {
+  const today = startOfToday();
+
+  if (Number.isFinite(endTimestamp) && endTimestamp < today) {
+    return { status: '已完成', completed: true, state: 'done' as const };
+  }
+
+  if (Number.isFinite(startTimestamp) && startTimestamp > today) {
+    return { status: '未开始', completed: false, state: 'pending' as const };
+  }
+
+  return { status: '进行中', completed: false, state: 'active' as const };
+}
+
+function formatDateRange(startText: string, endText: string) {
+  if (!startText || startText === '未设置') return endText || '未设置';
+  if (!endText || endText === '未设置' || endText === startText) return startText;
+  return `${startText} - ${endText}`;
 }
 
 function sortItems(items: TimelineItem[]) {
@@ -176,16 +181,18 @@ export async function createBaseClient(): Promise<BaseClient> {
             .map((record, index) => {
               const fields = record.fields ?? {};
               const name = normalizeText(fields[config.nameFieldId]) || `里程碑 ${index + 1}`;
-              const status = normalizeText(fields[config.statusFieldId]) || '未设置';
-              const date = normalizeDate(fields[config.dateFieldId]);
+              const startDate = normalizeDate(fields[config.startDateFieldId]);
+              const endDate = normalizeDate(fields[config.endDateFieldId]) || startDate;
+              const status = deriveStatus(startDate.timestamp, endDate.timestamp);
 
               return {
                 id: record.recordId ?? record.id ?? `${index}`,
                 name,
-                status,
-                dateText: date.text,
-                dateValue: date.timestamp,
-                completed: isCompletedStatus(status)
+                status: status.status,
+                dateText: formatDateRange(startDate.text, endDate.text),
+                dateValue: startDate.timestamp,
+                completed: status.completed,
+                state: status.state
               };
             })
             .filter((item) => item.name.trim())
@@ -203,7 +210,16 @@ export function pickInitialConfig(tableId: string, fields: FieldMeta[]): Timelin
   return {
     tableId,
     nameFieldId: findByKind('name') || fields[0]?.id || '',
-    statusFieldId: findByKind('status') || fields[1]?.id || '',
-    dateFieldId: findByKind('date') || fields[2]?.id || ''
+    startDateFieldId:
+      fields.find((field) => field.kind === 'date' && /开始|起始|start/i.test(field.name))?.id ||
+      findByKind('date') ||
+      fields[1]?.id ||
+      '',
+    endDateFieldId:
+      fields.find((field) => field.kind === 'date' && /结束|截止|完成|end|due/i.test(field.name))?.id ||
+      fields.filter((field) => field.kind === 'date')[1]?.id ||
+      findByKind('date') ||
+      fields[2]?.id ||
+      ''
   };
 }
