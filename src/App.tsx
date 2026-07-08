@@ -100,9 +100,20 @@ export default function App() {
 
       setClient(nextClient);
       setTables(nextTables);
-      setMessage(nextClient.isConnected ? '已连接当前多维表格' : '本地预览模式：使用示例数据');
+      setMessage(
+        nextClient.isDashboard
+          ? '已连接飞书仪表盘'
+          : nextClient.isConnected
+            ? '已连接当前多维表格'
+            : '本地预览模式：使用示例数据'
+      );
 
-      if (nextTables[0]) {
+      const savedConfig = await nextClient.loadSavedConfig();
+
+      if (savedConfig) {
+        setDraftConfig(savedConfig);
+        setAppliedConfig(savedConfig);
+      } else if (nextTables[0]) {
         setDraftConfig((current) => ({ ...current, tableId: nextTables[0].id }));
       }
 
@@ -131,7 +142,12 @@ export default function App() {
 
       setFields(nextFields);
       const nextConfig = pickInitialConfig(activeTableId, nextFields);
-      setDraftConfig(nextConfig);
+      setDraftConfig((current) => ({
+        tableId: activeTableId,
+        nameFieldId: current.nameFieldId || nextConfig.nameFieldId,
+        startDateFieldId: current.startDateFieldId || nextConfig.startDateFieldId,
+        endDateFieldId: current.endDateFieldId || nextConfig.endDateFieldId
+      }));
       setAppliedConfig((current) => (current.tableId ? current : nextConfig));
       setIsLoading(false);
     }
@@ -184,7 +200,19 @@ export default function App() {
 
   async function applyDraftConfig() {
     if (!client || !canApply) return;
+    setIsLoading(true);
+    const saved = await client.saveConfig(draftConfig);
     setAppliedConfig(draftConfig);
+    const nextItems = await client.getTimelineItems(draftConfig);
+    setItems(nextItems);
+    setMessage(
+      saved
+        ? client.isDashboard
+          ? '配置已应用到飞书仪表盘'
+          : '配置已应用'
+        : '配置已刷新，但飞书仪表盘保存失败'
+    );
+    setIsLoading(false);
   }
 
   return (
@@ -221,9 +249,11 @@ export default function App() {
             onClick={async () => {
               if (!client || !canApply) return;
               setIsLoading(true);
+              const saved = await client.saveConfig(draftConfig);
               const nextItems = await client.getTimelineItems(draftConfig);
               setItems(nextItems);
               setAppliedConfig(draftConfig);
+              setMessage(saved ? '配置已应用' : '配置已刷新，但飞书仪表盘保存失败');
               setIsLoading(false);
             }}
           >

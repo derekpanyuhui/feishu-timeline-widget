@@ -109,6 +109,7 @@ function isLikelyFeishuHost() {
 function createSampleClient(): BaseClient {
   return {
     isConnected: false,
+    isDashboard: false,
     async getTables() {
       return sampleTables;
     },
@@ -117,8 +118,26 @@ function createSampleClient(): BaseClient {
     },
     async getTimelineItems() {
       return sortItems(sampleTimelineItems);
+    },
+    async loadSavedConfig() {
+      return null;
+    },
+    async saveConfig() {
+      return true;
     }
   };
+}
+
+function isTimelineConfig(value: unknown): value is TimelineConfig {
+  if (!value || typeof value !== 'object') return false;
+  const config = value as Partial<TimelineConfig>;
+
+  return Boolean(
+    config.tableId &&
+      config.nameFieldId &&
+      config.startDateFieldId &&
+      config.endDateFieldId
+  );
 }
 
 export async function createBaseClient(): Promise<BaseClient> {
@@ -136,6 +155,7 @@ export async function createBaseClient(): Promise<BaseClient> {
 
     return {
       isConnected: true,
+      isDashboard: Boolean(bitable.dashboard),
       async getTables() {
         if (typeof bitable.base.getTableMetaList === 'function') {
           const metas = await bitable.base.getTableMetaList();
@@ -197,6 +217,49 @@ export async function createBaseClient(): Promise<BaseClient> {
             })
             .filter((item) => item.name.trim())
         );
+      },
+      async loadSavedConfig() {
+        try {
+          const dashboardConfig = await bitable.dashboard?.getConfig?.();
+          const saved = dashboardConfig?.customConfig?.timelineConfig;
+
+          return isTimelineConfig(saved) ? saved : null;
+        } catch {
+          return null;
+        }
+      },
+      async saveConfig(config: TimelineConfig) {
+        try {
+          const existingConfig = await bitable.dashboard?.getConfig?.().catch(() => null);
+          const dataConditions: unknown[] = existingConfig?.dataConditions?.length
+            ? existingConfig.dataConditions
+            : [
+                {
+                  tableId: config.tableId,
+                  dataRange: { type: sdk.SourceType.ALL },
+                  groups: [],
+                  series: 'COUNTA'
+                }
+              ];
+
+          if (!bitable.dashboard?.saveConfig) {
+            return true;
+          }
+
+          const saved = await bitable.dashboard.saveConfig({
+            dataConditions: dataConditions as never,
+            customConfig: {
+              ...(existingConfig?.customConfig ?? {}),
+              timelineConfig: config
+            }
+          });
+
+          await bitable.dashboard?.setRendered?.().catch(() => false);
+
+          return saved;
+        } catch {
+          return false;
+        }
       }
     };
   } catch {

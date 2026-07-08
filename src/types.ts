@@ -32,7 +32,10 @@ export type TimelineItem = {
 
 export type BaseClient = {
   isConnected: boolean;
+  isDashboard: boolean;
   getTables: () => Promise<TableMeta[]>;
   getFields: (tableId: string) => Promise<FieldMeta[]>;
   getTimelineItems: (config: TimelineConfig) => Promise<TimelineItem[]>;
+  loadSavedConfig: () => Promise<TimelineConfig | null>;
+  saveConfig: (config: TimelineConfig) => Promise<boolean>;
 };
