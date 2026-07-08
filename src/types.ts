@@ -38,4 +38,5 @@ export type BaseClient = {
   getTimelineItems: (config: TimelineConfig) => Promise<TimelineItem[]>;
   loadSavedConfig: () => Promise<TimelineConfig | null>;
   saveConfig: (config: TimelineConfig) => Promise<boolean>;
+  markRendered: () => Promise<void>;
 };

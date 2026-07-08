@@ -2,6 +2,24 @@ import { useEffect, useMemo, useState } from 'react';
 import { createBaseClient, pickInitialConfig } from './baseSdk';
 import type { BaseClient, FieldKind, FieldMeta, TableMeta, TimelineConfig, TimelineItem } from './types';
 
+const ASYNC_TIMEOUT_MS = 12000;
+
+async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label} timeout`)), ASYNC_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 const labels: Record<FieldKind, string> = {
   name: '名称字段',
   date: '日期字段',
@@ -135,21 +153,29 @@ export default function App() {
     const activeTableId = draftConfig.tableId;
 
     async function loadFields() {
-      setIsLoading(true);
-      const nextFields = await activeClient.getFields(activeTableId);
+      try {
+        setIsLoading(true);
+        const nextFields = await withTimeout(activeClient.getFields(activeTableId), 'loadFields');
 
-      if (!alive) return;
+        if (!alive) return;
 
-      setFields(nextFields);
-      const nextConfig = pickInitialConfig(activeTableId, nextFields);
-      setDraftConfig((current) => ({
-        tableId: activeTableId,
-        nameFieldId: current.nameFieldId || nextConfig.nameFieldId,
-        startDateFieldId: current.startDateFieldId || nextConfig.startDateFieldId,
-        endDateFieldId: current.endDateFieldId || nextConfig.endDateFieldId
-      }));
-      setAppliedConfig((current) => (current.tableId ? current : nextConfig));
-      setIsLoading(false);
+        setFields(nextFields);
+        const nextConfig = pickInitialConfig(activeTableId, nextFields);
+        setDraftConfig((current) => ({
+          tableId: activeTableId,
+          nameFieldId: current.nameFieldId || nextConfig.nameFieldId,
+          startDateFieldId: current.startDateFieldId || nextConfig.startDateFieldId,
+          endDateFieldId: current.endDateFieldId || nextConfig.endDateFieldId
+        }));
+        setAppliedConfig((current) => (current.tableId ? current : nextConfig));
+      } catch {
+        if (!alive) return;
+        setMessage('字段读取超时，请重新打开插件');
+      } finally {
+        if (alive) {
+          setIsLoading(false);
+        }
+      }
     }
 
     loadFields();
@@ -175,13 +201,21 @@ export default function App() {
     const activeConfig = appliedConfig;
 
     async function loadItems() {
-      setIsLoading(true);
-      const nextItems = await activeClient.getTimelineItems(activeConfig);
+      try {
+        setIsLoading(true);
+        const nextItems = await withTimeout(activeClient.getTimelineItems(activeConfig), 'loadItems');
 
-      if (!alive) return;
+        if (!alive) return;
 
-      setItems(nextItems);
-      setIsLoading(false);
+        setItems(nextItems);
+      } catch {
+        if (!alive) return;
+        setMessage('时间轴数据读取超时，请点刷新重试');
+      } finally {
+        if (alive) {
+          setIsLoading(false);
+        }
+      }
     }
 
     loadItems();
@@ -190,6 +224,12 @@ export default function App() {
       alive = false;
     };
   }, [client, appliedConfig]);
+
+  useEffect(() => {
+    if (!client || !client.isDashboard || isLoading) return;
+
+    client.markRendered().catch(() => undefined);
+  }, [client, isLoading, items]);
 
   const completedCount = items.filter((item) => item.completed).length;
   const canApply =
@@ -200,19 +240,25 @@ export default function App() {
 
   async function applyDraftConfig() {
     if (!client || !canApply) return;
-    setIsLoading(true);
-    const saved = await client.saveConfig(draftConfig);
-    setAppliedConfig(draftConfig);
-    const nextItems = await client.getTimelineItems(draftConfig);
-    setItems(nextItems);
-    setMessage(
-      saved
-        ? client.isDashboard
-          ? '配置已应用到飞书仪表盘'
-          : '配置已应用'
-        : '配置已刷新，但飞书仪表盘保存失败'
-    );
-    setIsLoading(false);
+    try {
+      setIsLoading(true);
+      const saved = await withTimeout(client.saveConfig(draftConfig), 'saveConfig');
+      setAppliedConfig(draftConfig);
+      const nextItems = await withTimeout(client.getTimelineItems(draftConfig), 'applyTimelineConfig');
+      setItems(nextItems);
+      setMessage(
+        saved
+          ? client.isDashboard
+            ? '配置已应用到飞书仪表盘'
+            : '配置已应用'
+          : '配置已刷新，但飞书仪表盘保存失败'
+      );
+    } catch {
+      setAppliedConfig(draftConfig);
+      setMessage(client.isDashboard ? '配置已提交，请关闭后重新打开插件查看' : '配置应用超时，请重试');
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   return (
@@ -248,13 +294,18 @@ export default function App() {
             type="button"
             onClick={async () => {
               if (!client || !canApply) return;
-              setIsLoading(true);
-              const saved = await client.saveConfig(draftConfig);
-              const nextItems = await client.getTimelineItems(draftConfig);
-              setItems(nextItems);
-              setAppliedConfig(draftConfig);
-              setMessage(saved ? '配置已应用' : '配置已刷新，但飞书仪表盘保存失败');
-              setIsLoading(false);
+              try {
+                setIsLoading(true);
+                const saved = await withTimeout(client.saveConfig(draftConfig), 'refreshSaveConfig');
+                const nextItems = await withTimeout(client.getTimelineItems(draftConfig), 'refreshTimeline');
+                setItems(nextItems);
+                setAppliedConfig(draftConfig);
+                setMessage(saved ? '配置已应用' : '配置已刷新，但飞书仪表盘保存失败');
+              } catch {
+                setMessage('刷新超时，请重新打开插件重试');
+              } finally {
+                setIsLoading(false);
+              }
             }}
           >
             刷新

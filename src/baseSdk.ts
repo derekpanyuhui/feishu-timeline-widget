@@ -124,6 +124,9 @@ function createSampleClient(): BaseClient {
     },
     async saveConfig() {
       return true;
+    },
+    async markRendered() {
+      return;
     }
   };
 }
@@ -254,11 +257,16 @@ export async function createBaseClient(): Promise<BaseClient> {
             }
           });
 
-          await bitable.dashboard?.setRendered?.().catch(() => false);
-
           return saved;
         } catch {
           return false;
+        }
+      },
+      async markRendered() {
+        try {
+          await bitable.dashboard?.setRendered?.();
+        } catch {
+          return;
         }
       }
     };
