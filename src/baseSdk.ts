@@ -1,4 +1,12 @@
-import type { BaseClient, FieldKind, FieldMeta, TableMeta, TimelineConfig, TimelineItem } from './types';
+import type {
+  BaseClient,
+  DashboardMode,
+  FieldKind,
+  FieldMeta,
+  TableMeta,
+  TimelineConfig,
+  TimelineItem
+} from './types';
 import { sampleFields, sampleTables, sampleTimelineItems } from './sampleData';
 
 const FIELD_TYPES = {
@@ -44,6 +52,13 @@ function normalizeText(value: unknown): string {
   }
 
   return '';
+}
+
+function normalizeDashboardCell(
+  cell: { text?: string | null; value?: string | number | null } | null | undefined
+) {
+  if (!cell) return '';
+  return normalizeText(cell.text ?? cell.value ?? '');
 }
 
 function normalizeDate(value: unknown): { text: string; timestamp: number } {
@@ -96,6 +111,68 @@ function sortItems(items: TimelineItem[]) {
   return [...items].sort((a, b) => a.dateValue - b.dateValue || a.name.localeCompare(b.name, 'zh-CN'));
 }
 
+function isConfigComplete(config: TimelineConfig) {
+  return Boolean(config.tableId && config.nameFieldId && config.startDateFieldId && config.endDateFieldId);
+}
+
+function deriveConfigFromDashboardCondition(
+  config: { dataConditions?: Array<{ tableId?: string; groups?: Array<{ fieldId?: string }> }> } | null | undefined
+): TimelineConfig | null {
+  const primary = config?.dataConditions?.[0];
+  const groupIds = primary?.groups?.map((group) => group.fieldId).filter(Boolean) ?? [];
+
+  if (!primary?.tableId || groupIds.length < 3) {
+    return null;
+  }
+
+  return {
+    tableId: primary.tableId,
+    nameFieldId: groupIds[0] ?? '',
+    startDateFieldId: groupIds[1] ?? '',
+    endDateFieldId: groupIds[2] ?? ''
+  };
+}
+
+function parseDashboardRows(
+  rows: Array<Array<{ text?: string | null; value?: string | number | null }>>,
+  fallbackConfig: TimelineConfig
+) {
+  return sortItems(
+    rows
+      .map((row, index) => {
+        const name = normalizeDashboardCell(row[0]) || `里程碑 ${index + 1}`;
+        const startDate = normalizeDate(normalizeDashboardCell(row[1]));
+        const endDate = normalizeDate(normalizeDashboardCell(row[2]) || normalizeDashboardCell(row[1]));
+        const status = deriveStatus(startDate.timestamp, endDate.timestamp);
+
+        return {
+          id: `${fallbackConfig.tableId}-${index}-${name}`,
+          name,
+          status: status.status,
+          dateText: formatDateRange(startDate.text, endDate.text),
+          dateValue: startDate.timestamp,
+          completed: status.completed,
+          state: status.state
+        };
+      })
+      .filter((item) => item.name.trim())
+  );
+}
+
+function getDashboardModeFromLocation(): DashboardMode {
+  if (typeof window === 'undefined') return 'standard';
+
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashQuery = window.location.hash.includes('?') ? window.location.hash.split('?')[1] ?? '' : '';
+  const hashParams = new URLSearchParams(hashQuery);
+  const flag = (key: string) => searchParams.get(key) === '1' || hashParams.get(key) === '1';
+
+  if (flag('isCreate')) return 'create';
+  if (flag('isConfig')) return 'config';
+  if (flag('isFullScreen')) return 'fullscreen';
+  return 'view';
+}
+
 function isLikelyFeishuHost() {
   if (typeof window === 'undefined') return false;
 
@@ -110,6 +187,9 @@ function createSampleClient(): BaseClient {
   return {
     isConnected: false,
     isDashboard: false,
+    getDashboardMode() {
+      return 'standard';
+    },
     async getTables() {
       return sampleTables;
     },
@@ -151,6 +231,23 @@ export async function createBaseClient(): Promise<BaseClient> {
   try {
     const sdk = await import('@lark-base-open/js-sdk');
     const bitable = sdk.bitable;
+    const buildDataCondition = (
+      config: TimelineConfig,
+      existingCondition?: {
+        dataRange?: unknown;
+        groups?: unknown[];
+        series?: unknown;
+      }
+    ) => ({
+      tableId: config.tableId,
+      dataRange: existingCondition?.dataRange ?? { type: sdk.SourceType.ALL },
+      groups: [
+        { fieldId: config.nameFieldId },
+        { fieldId: config.startDateFieldId },
+        { fieldId: config.endDateFieldId }
+      ],
+      series: existingCondition?.series ?? 'COUNTA'
+    });
 
     if (!bitable?.base) {
       throw new Error('Base SDK is unavailable outside Feishu.');
@@ -159,6 +256,9 @@ export async function createBaseClient(): Promise<BaseClient> {
     return {
       isConnected: true,
       isDashboard: Boolean(bitable.dashboard),
+      getDashboardMode() {
+        return bitable.dashboard ? getDashboardModeFromLocation() : 'standard';
+      },
       async getTables() {
         if (typeof bitable.base.getTableMetaList === 'function') {
           const metas = await bitable.base.getTableMetaList();
@@ -174,6 +274,22 @@ export async function createBaseClient(): Promise<BaseClient> {
         );
       },
       async getFields(tableId: string) {
+        if (bitable.dashboard?.getCategories) {
+          try {
+            const categories = await bitable.dashboard.getCategories(tableId);
+            if (categories.length) {
+              return categories.map((field: { fieldId: string; fieldName: string; fieldType?: number | string }) => ({
+                id: field.fieldId,
+                name: field.fieldName,
+                type: field.fieldType,
+                kind: classifyField({ name: field.fieldName, type: field.fieldType })
+              }));
+            }
+          } catch {
+            // fall back to base field metadata
+          }
+        }
+
         const table = await bitable.base.getTableById(tableId);
         const fields = await table.getFieldMetaList();
 
@@ -186,6 +302,31 @@ export async function createBaseClient(): Promise<BaseClient> {
         }));
       },
       async getTimelineItems(config: TimelineConfig) {
+        if (bitable.dashboard && isConfigComplete(config)) {
+          const mode = getDashboardModeFromLocation();
+          const existingConfig = await bitable.dashboard.getConfig?.().catch(() => null);
+          const primaryCondition = existingConfig?.dataConditions?.[0];
+          const dataCondition = buildDataCondition(config, primaryCondition);
+
+          try {
+            if (mode === 'create' || mode === 'config') {
+              const previewRows = await bitable.dashboard.getPreviewData(dataCondition as never);
+              return parseDashboardRows(
+                previewRows as Array<Array<{ text?: string | null; value?: string | number | null }>>,
+                config
+              );
+            }
+
+            const viewRows = await bitable.dashboard.getData();
+            return parseDashboardRows(
+              viewRows as Array<Array<{ text?: string | null; value?: string | number | null }>>,
+              config
+            );
+          } catch {
+            // fall back to direct base reading if dashboard data APIs reject the custom condition
+          }
+        }
+
         const table = await bitable.base.getTableById(config.tableId);
         const allRecords: Array<{ recordId?: string; id?: string; fields: Record<string, unknown> }> = [];
         let pageToken: number | undefined;
@@ -226,7 +367,11 @@ export async function createBaseClient(): Promise<BaseClient> {
           const dashboardConfig = await bitable.dashboard?.getConfig?.();
           const saved = dashboardConfig?.customConfig?.timelineConfig;
 
-          return isTimelineConfig(saved) ? saved : null;
+          if (isTimelineConfig(saved)) {
+            return saved;
+          }
+
+          return deriveConfigFromDashboardCondition(dashboardConfig);
         } catch {
           return null;
         }
@@ -235,15 +380,7 @@ export async function createBaseClient(): Promise<BaseClient> {
         try {
           const existingConfig = await bitable.dashboard?.getConfig?.().catch(() => null);
           const primaryCondition = existingConfig?.dataConditions?.[0];
-          const dataConditions = [
-            {
-              ...primaryCondition,
-              tableId: config.tableId,
-              dataRange: primaryCondition?.dataRange ?? { type: sdk.SourceType.ALL },
-              groups: primaryCondition?.groups ?? [],
-              series: primaryCondition?.series ?? 'COUNTA'
-            }
-          ];
+          const dataConditions = [buildDataCondition(config, primaryCondition)];
 
           if (!bitable.dashboard?.saveConfig) {
             return true;
@@ -268,6 +405,12 @@ export async function createBaseClient(): Promise<BaseClient> {
         } catch {
           return;
         }
+      },
+      onDashboardConfigChange(callback: () => void) {
+        return bitable.dashboard?.onConfigChange?.(() => callback()) ?? (() => undefined);
+      },
+      onDashboardDataChange(callback: () => void) {
+        return bitable.dashboard?.onDataChange?.(() => callback()) ?? (() => undefined);
       }
     };
   } catch {

@@ -20,6 +20,8 @@ export type TimelineConfig = {
   endDateFieldId: string;
 };
 
+export type DashboardMode = 'create' | 'config' | 'view' | 'fullscreen' | 'standard';
+
 export type TimelineItem = {
   id: string;
   name: string;
@@ -33,10 +35,13 @@ export type TimelineItem = {
 export type BaseClient = {
   isConnected: boolean;
   isDashboard: boolean;
+  getDashboardMode: () => DashboardMode;
   getTables: () => Promise<TableMeta[]>;
   getFields: (tableId: string) => Promise<FieldMeta[]>;
   getTimelineItems: (config: TimelineConfig) => Promise<TimelineItem[]>;
   loadSavedConfig: () => Promise<TimelineConfig | null>;
   saveConfig: (config: TimelineConfig) => Promise<boolean>;
   markRendered: () => Promise<void>;
+  onDashboardConfigChange?: (callback: () => void) => () => void;
+  onDashboardDataChange?: (callback: () => void) => () => void;
 };

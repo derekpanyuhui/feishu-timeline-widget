@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createBaseClient, pickInitialConfig } from './baseSdk';
-import type { BaseClient, FieldKind, FieldMeta, TableMeta, TimelineConfig, TimelineItem } from './types';
+import type {
+  BaseClient,
+  DashboardMode,
+  FieldKind,
+  FieldMeta,
+  TableMeta,
+  TimelineConfig,
+  TimelineItem
+} from './types';
 
 const ASYNC_TIMEOUT_MS = 12000;
 
@@ -65,7 +73,7 @@ function FieldSelect({
 function Timeline({ items }: { items: TimelineItem[] }) {
   if (!items.length) {
     return (
-        <div className="empty">
+      <div className="empty">
         <div className="empty-title">还没有可展示的里程碑</div>
         <div className="empty-copy">请选择数据源、里程碑名称、开始日期和结束日期字段。</div>
       </div>
@@ -104,6 +112,8 @@ export default function App() {
   };
   const [draftConfig, setDraftConfig] = useState<TimelineConfig>(emptyConfig);
   const [appliedConfig, setAppliedConfig] = useState<TimelineConfig>(emptyConfig);
+  const [dashboardMode, setDashboardMode] = useState<DashboardMode>('standard');
+  const [dashboardSignal, setDashboardSignal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [message, setMessage] = useState('正在连接多维表格...');
 
@@ -118,9 +128,12 @@ export default function App() {
 
       setClient(nextClient);
       setTables(nextTables);
+      setDashboardMode(nextClient.getDashboardMode());
       setMessage(
         nextClient.isDashboard
-          ? '已连接飞书仪表盘'
+          ? nextClient.getDashboardMode() === 'view' || nextClient.getDashboardMode() === 'fullscreen'
+            ? '已连接飞书仪表盘展示态'
+            : '已连接飞书仪表盘配置态'
           : nextClient.isConnected
             ? '已连接当前多维表格'
             : '本地预览模式：使用示例数据'
@@ -144,6 +157,44 @@ export default function App() {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!client || !client.isDashboard) return;
+
+    let alive = true;
+
+    const syncDashboardState = async () => {
+      setDashboardMode(client.getDashboardMode());
+      const savedConfig = await client.loadSavedConfig().catch(() => null);
+
+      if (!alive || !savedConfig) return;
+
+      setDraftConfig(savedConfig);
+      setAppliedConfig(savedConfig);
+      setDashboardSignal((current) => current + 1);
+    };
+
+    const syncMode = () => {
+      setDashboardMode(client.getDashboardMode());
+      setDashboardSignal((current) => current + 1);
+    };
+
+    const unsubscribeConfig = client.onDashboardConfigChange?.(() => {
+      void syncDashboardState();
+    });
+    const unsubscribeData = client.onDashboardDataChange?.(syncMode);
+
+    window.addEventListener('hashchange', syncMode);
+    window.addEventListener('popstate', syncMode);
+
+    return () => {
+      alive = false;
+      unsubscribeConfig?.();
+      unsubscribeData?.();
+      window.removeEventListener('hashchange', syncMode);
+      window.removeEventListener('popstate', syncMode);
+    };
+  }, [client]);
 
   useEffect(() => {
     if (!client || !draftConfig.tableId) return;
@@ -188,17 +239,25 @@ export default function App() {
   useEffect(() => {
     if (
       !client ||
-      !appliedConfig.tableId ||
-      !appliedConfig.nameFieldId ||
-      !appliedConfig.startDateFieldId ||
-      !appliedConfig.endDateFieldId
+      !(client.isDashboard && (dashboardMode === 'create' || dashboardMode === 'config')
+        ? draftConfig.tableId &&
+          draftConfig.nameFieldId &&
+          draftConfig.startDateFieldId &&
+          draftConfig.endDateFieldId
+        : appliedConfig.tableId &&
+          appliedConfig.nameFieldId &&
+          appliedConfig.startDateFieldId &&
+          appliedConfig.endDateFieldId)
     ) {
       return;
     }
 
     let alive = true;
     const activeClient = client;
-    const activeConfig = appliedConfig;
+    const activeConfig =
+      activeClient.isDashboard && (dashboardMode === 'create' || dashboardMode === 'config')
+        ? draftConfig
+        : appliedConfig;
 
     async function loadItems() {
       try {
@@ -223,13 +282,13 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [client, appliedConfig]);
+  }, [client, appliedConfig, draftConfig, dashboardMode, dashboardSignal]);
 
   useEffect(() => {
     if (!client || !client.isDashboard || isLoading) return;
 
     client.markRendered().catch(() => undefined);
-  }, [client, isLoading, items]);
+  }, [client, isLoading, items, dashboardMode]);
 
   const completedCount = items.filter((item) => item.completed).length;
   const canApply =
@@ -237,6 +296,7 @@ export default function App() {
     Boolean(draftConfig.nameFieldId) &&
     Boolean(draftConfig.startDateFieldId) &&
     Boolean(draftConfig.endDateFieldId);
+  const showSettings = !client?.isDashboard || dashboardMode === 'create' || dashboardMode === 'config';
 
   async function applyDraftConfig() {
     if (!client || !canApply) return;
@@ -249,13 +309,13 @@ export default function App() {
       setMessage(
         saved
           ? client.isDashboard
-            ? '配置已应用到飞书仪表盘'
+            ? '配置已提交到飞书仪表盘'
             : '配置已应用'
           : '配置已刷新，但飞书仪表盘保存失败'
       );
     } catch {
       setAppliedConfig(draftConfig);
-      setMessage(client.isDashboard ? '配置已提交，请关闭后重新打开插件查看' : '配置应用超时，请重试');
+      setMessage(client.isDashboard ? '配置已提交，请等待飞书刷新组件' : '配置应用超时，请重试');
     } finally {
       setIsLoading(false);
     }
@@ -287,73 +347,75 @@ export default function App() {
         </div>
       </section>
 
-      <aside className="settings" aria-label="时间线配置">
-        <div className="settings-head">
-          <h2>数据源</h2>
-          <button
-            type="button"
-            onClick={async () => {
-              if (!client || !canApply) return;
-              try {
-                setIsLoading(true);
-                const saved = await withTimeout(client.saveConfig(draftConfig), 'refreshSaveConfig');
-                const nextItems = await withTimeout(client.getTimelineItems(draftConfig), 'refreshTimeline');
-                setItems(nextItems);
-                setAppliedConfig(draftConfig);
-                setMessage(saved ? '配置已应用' : '配置已刷新，但飞书仪表盘保存失败');
-              } catch {
-                setMessage('刷新超时，请重新打开插件重试');
-              } finally {
-                setIsLoading(false);
-              }
-            }}
-          >
-            刷新
+      {showSettings ? (
+        <aside className="settings" aria-label="时间线配置">
+          <div className="settings-head">
+            <h2>数据源</h2>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!client || !canApply) return;
+                try {
+                  setIsLoading(true);
+                  const saved = await withTimeout(client.saveConfig(draftConfig), 'refreshSaveConfig');
+                  const nextItems = await withTimeout(client.getTimelineItems(draftConfig), 'refreshTimeline');
+                  setItems(nextItems);
+                  setAppliedConfig(draftConfig);
+                  setMessage(saved ? '配置已刷新' : '配置已刷新，但飞书仪表盘保存失败');
+                } catch {
+                  setMessage('刷新超时，请重新打开插件重试');
+                } finally {
+                  setIsLoading(false);
+                }
+              }}
+            >
+              刷新
+            </button>
+          </div>
+
+          <label className="control">
+            <span>数据表</span>
+            <select
+              value={draftConfig.tableId}
+              onChange={(event) => setDraftConfig((current) => ({ ...current, tableId: event.target.value }))}
+            >
+              {tables.map((table) => (
+                <option key={table.id} value={table.id}>
+                  {table.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <FieldSelect
+            label="里程碑名称"
+            value={draftConfig.nameFieldId}
+            fields={fields}
+            preferredKinds={['name']}
+            onChange={(value) => setDraftConfig((current) => ({ ...current, nameFieldId: value }))}
+          />
+
+          <FieldSelect
+            label="开始日期"
+            value={draftConfig.startDateFieldId}
+            fields={fields}
+            preferredKinds={['date']}
+            onChange={(value) => setDraftConfig((current) => ({ ...current, startDateFieldId: value }))}
+          />
+
+          <FieldSelect
+            label="结束日期"
+            value={draftConfig.endDateFieldId}
+            fields={fields}
+            preferredKinds={['date']}
+            onChange={(value) => setDraftConfig((current) => ({ ...current, endDateFieldId: value }))}
+          />
+
+          <button className="primary" type="button" disabled={!canApply || isLoading} onClick={applyDraftConfig}>
+            确定
           </button>
-        </div>
-
-        <label className="control">
-          <span>数据表</span>
-          <select
-            value={draftConfig.tableId}
-            onChange={(event) => setDraftConfig((current) => ({ ...current, tableId: event.target.value }))}
-          >
-            {tables.map((table) => (
-              <option key={table.id} value={table.id}>
-                {table.name}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <FieldSelect
-          label="里程碑名称"
-          value={draftConfig.nameFieldId}
-          fields={fields}
-          preferredKinds={['name']}
-          onChange={(value) => setDraftConfig((current) => ({ ...current, nameFieldId: value }))}
-        />
-
-        <FieldSelect
-          label="开始日期"
-          value={draftConfig.startDateFieldId}
-          fields={fields}
-          preferredKinds={['date']}
-          onChange={(value) => setDraftConfig((current) => ({ ...current, startDateFieldId: value }))}
-        />
-
-        <FieldSelect
-          label="结束日期"
-          value={draftConfig.endDateFieldId}
-          fields={fields}
-          preferredKinds={['date']}
-          onChange={(value) => setDraftConfig((current) => ({ ...current, endDateFieldId: value }))}
-        />
-
-        <button className="primary" type="button" disabled={!canApply || isLoading} onClick={applyDraftConfig}>
-          确定
-        </button>
-      </aside>
+        </aside>
+      ) : null}
     </main>
   );
 }
